@@ -1,9 +1,7 @@
 package coelho.msftauth.api;
 
-import org.apache.http.client.methods.HttpPost;
+import okhttp3.Request.Builder;
 
 public interface APIEncodingEncode {
-
-	void encode(HttpPost post, Object object);
-
+    void encode(Builder builder, Object obj);
 }

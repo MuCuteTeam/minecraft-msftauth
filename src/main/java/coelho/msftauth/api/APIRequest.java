@@ -1,71 +1,53 @@
 package coelho.msftauth.api;
 
-import com.google.common.io.CharStreams;
-import org.apache.http.HttpRequest;
-import org.apache.http.client.config.RequestConfig;
-import org.apache.http.client.methods.CloseableHttpResponse;
-import org.apache.http.client.methods.HttpGet;
-import org.apache.http.client.methods.HttpPost;
-import org.apache.http.client.methods.HttpUriRequest;
-import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.HttpClients;
-import org.apache.http.util.EntityUtils;
-
-import java.nio.charset.StandardCharsets;
+import okhttp3.OkHttpClient;
+import okhttp3.Request.Builder;
+import okhttp3.Response;
 
 public abstract class APIRequest<R> {
+    public abstract String getHttpURL();
 
-	public R request() throws Exception {
-		RequestConfig clientConfig = RequestConfig.custom()
-				.setConnectionRequestTimeout(10_000)
-				.setConnectTimeout(10_000)
-				.setSocketTimeout(10_000)
-				.build();
-		try (CloseableHttpClient client = HttpClients.custom().setDefaultRequestConfig(clientConfig).build()) {
-			HttpUriRequest request;
-			if (this.getRequestEncoding() != null) {
-				HttpPost post = new HttpPost(this.getHttpURL());
-				this.getRequestEncoding().encode(post, this);
-				request = post;
-			} else {
-				request = new HttpGet(this.getHttpURL());
-			}
-			if (this.getHttpAuthorization() != null) {
-				request.setHeader("Authorization", this.getHttpAuthorization());
-			}
-			this.applyHeader(request);
+    public abstract APIEncoding getRequestEncoding();
 
-			try (CloseableHttpResponse response = client.execute(request)) {
-				if (response.getStatusLine().getStatusCode() != 200) {
-					try {
-						System.out.println(EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8));
-					} catch (Exception ignore) {
-					}
-					throw new IllegalStateException("status code: " + response.getStatusLine().getStatusCode());
-				}
-				R decoded = this.getResponseEncoding().decode(response, this.getResponseClass());
-				if (decoded instanceof APIResponseExt) {
-					((APIResponseExt) decoded).applyResponse(response);
-				}
-				return decoded;
-			}
-		}
-	}
+    public abstract Class<R> getResponseClass();
 
-	public void applyHeader(HttpRequest request) {
+    public abstract APIEncoding getResponseEncoding();
 
-	}
+    public R request(OkHttpClient client) throws Exception {
+        Builder requestBuilder = new Builder().url(getHttpURL());
+        if (getRequestEncoding() != null) {
+            getRequestEncoding().encode(requestBuilder, this);
+        } else {
+            requestBuilder.get();
+        }
+        if (getHttpAuthorization() != null) {
+            requestBuilder.addHeader("Authorization", getHttpAuthorization());
+        }
+        applyHeader(requestBuilder);
+        Response response = client.newCall(requestBuilder.build()).execute();
+        boolean contains = false;
+        for (Class<?> klass : getResponseClass().getInterfaces()) {
+            if (klass == APIRequestWithStatus.class) {
+                contains = true;
+            }
+        }
+        if (contains || response.code() == 200) {
+            R decoded = getResponseEncoding().decode(response, getResponseClass());
+            if (decoded instanceof APIResponseExt) {
+                ((APIResponseExt) decoded).applyResponse(response);
+            }
+            if (decoded instanceof APIRequestWithStatus) {
+                ((APIRequestWithStatus) decoded).setStatus(response.code());
+            }
+            return decoded;
+        }
+        throw new IllegalStateException("status code: " + response.code());
+    }
 
-	public abstract String getHttpURL();
+    public void applyHeader(Builder requestBuilder) {
+    }
 
-	public String getHttpAuthorization() {
-		return null;
-	}
-
-	public abstract APIEncoding getRequestEncoding();
-
-	public abstract APIEncoding getResponseEncoding();
-
-	public abstract Class<R> getResponseClass();
-
+    public String getHttpAuthorization() {
+        return null;
+    }
 }

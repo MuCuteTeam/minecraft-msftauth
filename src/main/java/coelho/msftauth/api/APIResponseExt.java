@@ -1,11 +1,8 @@
 package coelho.msftauth.api;
 
-import org.apache.http.HttpResponse;
+import okhttp3.Response;
 
 public interface APIResponseExt {
-
-	default void applyResponse(HttpResponse response) {
-
-	}
-
+    default void applyResponse(Response response) {
+    }
 }

@@ -5,43 +5,38 @@ import coelho.msftauth.api.APIRequest;
 import coelho.msftauth.api.xbox.XboxToken;
 import com.google.gson.annotations.SerializedName;
 
+@SuppressWarnings("FieldMayBeFinal")
 public class MinecraftTokenRequest extends APIRequest<MinecraftToken> {
+    @SerializedName("identityToken")
+    private String identityToken;
+    private transient XboxToken token;
 
-	private transient XboxToken token;
-	@SerializedName("identityToken")
-	private String identityToken;
+    public MinecraftTokenRequest(XboxToken token) {
+        this.token = token;
+        this.identityToken = token.toIdentityToken();
+    }
 
-	public MinecraftTokenRequest(XboxToken token) {
-		this.token = token;
-		this.identityToken = token.toIdentityToken();
-	}
+    public XboxToken getToken() {
+        return this.token;
+    }
 
-	public XboxToken getToken() {
-		return this.token;
-	}
+    public String getIdentityToken() {
+        return this.identityToken;
+    }
 
-	public String getIdentityToken() {
-		return this.identityToken;
-	}
+    public String getHttpURL() {
+        return "https://api.minecraftservices.com/authentication/login_with_xbox";
+    }
 
-	@Override
-	public String getHttpURL() {
-		return "https://api.minecraftservices.com/authentication/login_with_xbox";
-	}
+    public APIEncoding getRequestEncoding() {
+        return APIEncoding.JSON;
+    }
 
-	@Override
-	public APIEncoding getRequestEncoding() {
-		return APIEncoding.JSON;
-	}
+    public APIEncoding getResponseEncoding() {
+        return APIEncoding.JSON;
+    }
 
-	@Override
-	public APIEncoding getResponseEncoding() {
-		return APIEncoding.JSON;
-	}
-
-	@Override
-	public Class<MinecraftToken> getResponseClass() {
-		return MinecraftToken.class;
-	}
-
+    public Class<MinecraftToken> getResponseClass() {
+        return MinecraftToken.class;
+    }
 }

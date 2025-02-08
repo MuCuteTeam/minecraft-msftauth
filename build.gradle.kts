@@ -20,4 +20,5 @@ dependencies {
     api(libs.gson)
     api(libs.http.client)
     api(libs.bcprov)
+    api(libs.okhttp)
 }

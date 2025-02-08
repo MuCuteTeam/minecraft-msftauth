@@ -1,202 +1,177 @@
 package coelho.msftauth.api.xbox;
 
-import coelho.msftauth.util.ECDSAUtil;
-import com.google.common.io.ByteStreams;
-import com.google.common.io.CharStreams;
-import org.apache.http.Header;
-import org.apache.http.HttpRequest;
-import org.apache.http.client.methods.HttpPost;
-import org.bouncycastle.asn1.ASN1Primitive;
-import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
-import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
-import org.bouncycastle.crypto.AsymmetricCipherKeyPair;
-import org.bouncycastle.crypto.digests.SHA256Digest;
-import org.bouncycastle.crypto.digests.SHA512Digest;
-import org.bouncycastle.crypto.params.AsymmetricKeyParameter;
-import org.bouncycastle.crypto.params.ECPrivateKeyParameters;
-import org.bouncycastle.crypto.params.ECPublicKeyParameters;
-import org.bouncycastle.crypto.signers.ECDSASigner;
-import org.bouncycastle.crypto.signers.HMacDSAKCalculator;
-import org.bouncycastle.crypto.util.PrivateKeyFactory;
-import org.bouncycastle.crypto.util.PrivateKeyInfoFactory;
-import org.bouncycastle.crypto.util.PublicKeyFactory;
-import org.bouncycastle.crypto.util.SubjectPublicKeyInfoFactory;
-import org.bouncycastle.jce.provider.JCEECPrivateKey;
-import org.bouncycastle.util.io.pem.PemObject;
-import org.bouncycastle.util.io.pem.PemReader;
-
-import java.io.BufferedReader;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
+import coelho.msftauth.util.der.DerInputStream;
+import coelho.msftauth.util.der.DerValue;
 import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.io.StringReader;
-import java.io.StringWriter;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
-import java.security.PrivateKey;
+import java.security.GeneralSecurityException;
+import java.security.InvalidAlgorithmParameterException;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.NoSuchAlgorithmException;
+import java.security.Signature;
+import java.security.SignatureException;
+import java.security.interfaces.ECPrivateKey;
+import java.security.interfaces.ECPublicKey;
+import java.security.spec.ECGenParameterSpec;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.UUID;
+import okhttp3.Request;
+import okhttp3.Request.Builder;
+import okio.Buffer;
 
+@SuppressWarnings("FieldMayBeFinal")
 public class XboxDeviceKey {
+    private static final KeyPairGenerator KEY_PAIR_GEN;
+    private final KeyPair ecKey = KEY_PAIR_GEN.generateKeyPair();
+    private String id = UUID.randomUUID().toString();
+    private final XboxProofKey proofKey = new XboxProofKey(this);
 
-	private String id;
-	private AsymmetricCipherKeyPair keyPair;
-	private ECPublicKeyParameters publicKey;
-	private ECPrivateKeyParameters privateKey;
-	private XboxProofKey proofKey;
+    static {
+        GeneralSecurityException e;
+        try {
+            KEY_PAIR_GEN = KeyPairGenerator.getInstance("EC");
+            KEY_PAIR_GEN.initialize(new ECGenParameterSpec("secp256r1"));
+        } catch (NoSuchAlgorithmException | InvalidAlgorithmParameterException e2) {
+            e = e2;
+            throw new RuntimeException(e);
+        }
+    }
 
-	public XboxDeviceKey() {
-		this.id = UUID.randomUUID().toString();
-		this.keyPair = ECDSAUtil.generateKey();
-		this.publicKey = (ECPublicKeyParameters) this.keyPair.getPublic();
-		this.privateKey = (ECPrivateKeyParameters) this.keyPair.getPrivate();
-		this.proofKey = new XboxProofKey(this);
-	}
+    public void sign(Builder requestBuilder) {
+        try {
+            Buffer buffer = new Buffer();
+            Request tempRequest = requestBuilder.build();
+            String authHeader = tempRequest.header("Authorization");
+            tempRequest.body().writeTo(buffer);
+            requestBuilder.addHeader("Signature", sign(tempRequest.url().encodedPath(), authHeader, tempRequest.method(), buffer.readByteArray()));
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
 
-	public XboxDeviceKey(String encoded) throws IOException {
-		BufferedReader reader = new BufferedReader(new StringReader(encoded));
-		this.id = reader.readLine();
-		this.publicKey = (ECPublicKeyParameters) PublicKeyFactory.createKey(Base64.getDecoder().decode(reader.readLine()));
-		this.privateKey = (ECPrivateKeyParameters) PrivateKeyFactory.createKey(Base64.getDecoder().decode(reader.readLine()));
-		this.keyPair = new AsymmetricCipherKeyPair(this.publicKey, this.privateKey);
-		this.proofKey = new XboxProofKey(this);
-	}
+    public String sign(String path, String authHeader, String requestMethod, byte[] body) {
+        try {
+            byte[] auth;
+            byte[] uri = path.getBytes(StandardCharsets.US_ASCII);
+            if (authHeader == null) {
+                auth = new byte[0];
+            } else {
+                auth = authHeader.getBytes(StandardCharsets.US_ASCII);
+            }
+            byte[] method = requestMethod.getBytes(StandardCharsets.US_ASCII);
+            if (body == null) {
+                body = new byte[0];
+            }
+            long time = (Instant.now().getEpochSecond() + 11644473600L) * 10000000;
+            ByteBuffer buffer = ByteBuffer.allocate(body.length + 256);
+            buffer.order(ByteOrder.BIG_ENDIAN);
+            buffer.put(new byte[]{(byte) 0, (byte) 0, (byte) 0, (byte) 1, (byte) 0});
+            buffer.putLong(time);
+            buffer.put((byte) 0);
+            buffer.put(method);
+            buffer.put((byte) 0);
+            buffer.put(uri);
+            buffer.put((byte) 0);
+            buffer.put(auth);
+            buffer.put((byte) 0);
+            buffer.put(body);
+            buffer.put((byte) 0);
+            buffer.flip();
+            byte[] arrSignature = ecdsaSign((ECPrivateKey) this.ecKey.getPrivate(), buffer);
+            buffer = ByteBuffer.allocate(arrSignature.length + 12);
+            buffer.putInt(1);
+            buffer.putLong(time);
+            buffer.put(arrSignature);
+            buffer.rewind();
+            byte[] arrFinal = new byte[buffer.remaining()];
+            buffer.get(arrFinal);
+            return Base64.getEncoder().encodeToString(arrFinal);
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
 
-	public String encode() throws IOException {
-		StringWriter writer = new StringWriter();
-		SubjectPublicKeyInfo publicKeyInfo = SubjectPublicKeyInfoFactory.createSubjectPublicKeyInfo(this.publicKey);
-		PrivateKeyInfo privateKeyInfo = PrivateKeyInfoFactory.createPrivateKeyInfo(this.privateKey);
-		writer.write(this.id);
-		writer.write("\n");
-		writer.write(Base64.getEncoder().encodeToString(publicKeyInfo.toASN1Primitive().getEncoded()));
-		writer.write("\n");
-		writer.write(Base64.getEncoder().encodeToString(privateKeyInfo.toASN1Primitive().getEncoded()));
-		writer.write("\n");
-		return writer.toString();
-	}
+    private static byte[] ecdsaSign(ECPrivateKey privateKey, ByteBuffer buffer) throws Exception {
+        Signature signature = Signature.getInstance("SHA256withECDSA");
+        signature.initSign(privateKey);
+        signature.update(buffer);
+        return decodeSignature(signature.sign());
+    }
 
-	public void sign(HttpRequest request) {
-		try {
-			if (!(request instanceof HttpPost)) {
-				throw new IllegalArgumentException("request is not post");
-			}
+    public static byte[] decodeSignature(byte[] sig) throws SignatureException {
+        try {
+            DerInputStream in = new DerInputStream(sig, 0, sig.length, false);
+            DerValue[] values = in.getSequence(2);
+            if (values.length == 2 && in.available() == 0) {
+                BigInteger r = values[0].getPositiveBigInteger();
+                BigInteger s = values[1].getPositiveBigInteger();
+                byte[] rBytes = trimZeroes(r.toByteArray());
+                byte[] sBytes = trimZeroes(s.toByteArray());
+                int k = Math.max(rBytes.length, sBytes.length);
+                byte[] result = new byte[(k << 1)];
+                System.arraycopy(rBytes, 0, result, k - rBytes.length, rBytes.length);
+                System.arraycopy(sBytes, 0, result, result.length - sBytes.length, sBytes.length);
+                return result;
+            }
+            throw new IOException("Invalid encoding for signature");
+        } catch (Exception e) {
+            throw new SignatureException("Invalid encoding for signature", e);
+        }
+    }
 
-			HttpPost post = (HttpPost) request;
-			Header authHeader = post.getFirstHeader("Authorization");
-			String query = post.getURI().getRawQuery();
-			if (query == null) {
-				query = "";
-			}
-			byte[] uri = (post.getURI().getPath() + query).getBytes(StandardCharsets.US_ASCII);
-			byte[] auth = authHeader == null ? new byte[]{} : authHeader.getValue().getBytes(StandardCharsets.US_ASCII);
-			byte[] method = post.getMethod().getBytes(StandardCharsets.US_ASCII);
-			byte[] body = ByteStreams.toByteArray(post.getEntity().getContent());
-			long time = (Instant.now().getEpochSecond() + 11644473600L) * 10000000L;
+    public static byte[] trimZeroes(byte[] b) {
+        int i = 0;
+        while (i < b.length - 1 && b[i] == (byte) 0) {
+            i++;
+        }
+        return i == 0 ? b : Arrays.copyOfRange(b, i, b.length);
+    }
 
-			ByteBuffer buffer = ByteBuffer.allocate(body.length + 256);
-			buffer.order(ByteOrder.BIG_ENDIAN);
-			// Signature policy version (0, 0, 0, 1) + 0 byte.
-			buffer.put(new byte[]{0, 0, 0, 1, 0});
-			// Timestamp
-			buffer.putLong(time);
-			buffer.put((byte) 0);
-			// HTTP Method
-			buffer.put(method);
-			buffer.put((byte) 0);
-			// HTTP URI
-			buffer.put(uri);
-			buffer.put((byte) 0);
-			// HTTP Authorization
-			buffer.put(auth);
-			buffer.put((byte) 0);
-			// Body
-			buffer.put(body);
-			buffer.put((byte) 0);
-			//
-			buffer.flip();
+    public String getId() {
+        return this.id;
+    }
 
-			SHA256Digest digest = new SHA256Digest();
-			digest.update(buffer.array(), 0, buffer.remaining());
-			byte[] digestBytes = new byte[digest.getDigestSize()];
-			digest.doFinal(digestBytes, 0);
+    public String getCrv() {
+        return "P-256";
+    }
 
-			ECDSASigner signer = new ECDSASigner(new HMacDSAKCalculator(new SHA512Digest()));
-			signer.init(true, this.privateKey);
-			BigInteger[] signature = signer.generateSignature(digestBytes);
+    public String getAlg() {
+        return "ES256";
+    }
 
-			buffer.clear();
-			buffer.order(ByteOrder.BIG_ENDIAN);
-			buffer.put(new byte[] {0, 0, 0, 1});
-			buffer.putLong(time);
-			buffer.put(bigIntegerToByteArray(signature[0].abs()));
-			buffer.put(bigIntegerToByteArray(signature[1].abs()));
-			buffer.flip();
+    public String getUse() {
+        return "sig";
+    }
 
-			String signatureHeader = Base64.getEncoder().encodeToString(Arrays.copyOf(buffer.array(), buffer.remaining()));
-			request.setHeader("Signature", signatureHeader);
-		} catch(Exception exception) {
-			throw new IllegalStateException(exception);
-		}
-	}
+    public String getKty() {
+        return "EC";
+    }
 
-	private static byte[] bigIntegerToByteArray(BigInteger bigInteger) {
-		byte[] array = bigInteger.toByteArray();
-		if (array[0] == 0) {
-			byte[] newArray = new byte[array.length - 1];
-			System.arraycopy(array, 1, newArray, 0, newArray.length);
-			return newArray;
-		}
-		return array;
-	}
+    public byte[] getPublicXBytes() {
+        return bigIntegerToByteArray(((ECPublicKey) this.ecKey.getPublic()).getW().getAffineX());
+    }
 
-	public String getId() {
-		return this.id;
-	}
+    public byte[] getPublicYBytes() {
+        return bigIntegerToByteArray(((ECPublicKey) this.ecKey.getPublic()).getW().getAffineY());
+    }
 
-	public String getCrv() {
-		return "P-256";
-	}
+    private static byte[] bigIntegerToByteArray(BigInteger bigInteger) {
+        byte[] array = bigInteger.toByteArray();
+        if (array[0] != (byte) 0) {
+            return array;
+        }
+        byte[] newArray = new byte[(array.length - 1)];
+        System.arraycopy(array, 1, newArray, 0, newArray.length);
+        return newArray;
+    }
 
-	public String getAlg() {
-		return "ES256";
-	}
-
-	public String getUse() {
-		return "sig";
-	}
-
-	public String getKty() {
-		return "EC";
-	}
-
-	public AsymmetricCipherKeyPair getKeyPair() {
-		return this.keyPair;
-	}
-
-	public ECPublicKeyParameters getPublicKey() {
-		return this.publicKey;
-	}
-
-	public byte[] getPublicXBytes() {
-		return bigIntegerToByteArray(this.publicKey.getQ().getAffineXCoord().toBigInteger());
-	}
-
-	public byte[] getPublicYBytes() {
-		return bigIntegerToByteArray(this.publicKey.getQ().getAffineYCoord().toBigInteger());
-	}
-
-	public ECPrivateKeyParameters getPrivateKey() {
-		return this.privateKey;
-	}
-
-	public XboxProofKey getProofKey() {
-		return this.proofKey;
-	}
-
+    public XboxProofKey getProofKey() {
+        return this.proofKey;
+    }
 }
