@@ -79,7 +79,6 @@ public class BitArray {
         } else {
             byte[] bArr2 = this.repn;
             bArr2[idx] = (byte) (((~bit)) & bArr2[idx]);
-            // Test
         }
     }
 
